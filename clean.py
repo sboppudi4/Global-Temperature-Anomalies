@@ -188,13 +188,25 @@ def complete_monthly_series(data: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     return completed, statistics
 
 
+def normalize_series(data: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Calculate the twentieth-century baseline difference and full-series z-score."""
+    data = data.copy()
+    baseline_mask = data["Date"].dt.year.between(1901, 2000)
+    mu_20 = float(data.loc[baseline_mask, "Temperature_Anomaly"].mean())
+    mu = float(data["Temperature_Anomaly"].mean())
+    sigma = float(data["Temperature_Anomaly"].std(ddof=0))
+    data["d"] = data["Temperature_Anomaly"] - mu_20
+    data["z"] = (data["Temperature_Anomaly"] - mu) / sigma
+    return data, {"mu_20": mu_20, "mu": mu, "sigma": sigma}
+
+
 def write_monthly_checkpoint(data: pd.DataFrame, path: Path = OUTPUT_PATH) -> None:
     """Write the current cleaned monthly state before normalization is available."""
     checkpoint = pd.DataFrame(
         {
             "date": data["Date"].dt.strftime("%Y-%m"),
             "anomaly_c": data["Temperature_Anomaly"],
-            "z": float("nan"),
+            "z": data["z"] if "z" in data else float("nan"),
         }
     )
     checkpoint.to_csv(path, index=False, float_format="%.6f")
@@ -207,6 +219,7 @@ def main() -> None:
     data, duplicate_count = sort_and_deduplicate(data)
     data, iqr_statistics = remove_iqr_outliers(data)
     data, interpolation_statistics = complete_monthly_series(data)
+    data, normalization_statistics = normalize_series(data)
     write_monthly_checkpoint(data)
     print(f"Loaded candidate data rows: {len(data)}")
     print(f"Discarded file-hygiene rows: {len(footer)}")
@@ -221,6 +234,9 @@ def main() -> None:
     print(f"Missing observed values: {interpolation_statistics['missing_observed_values']}")
     print(f"Months imputed: {interpolation_statistics['months_imputed']}")
     print(f"Missing after interpolation: {interpolation_statistics['missing_after_interpolation']}")
+    print(f"mu_20: {normalization_statistics['mu_20']:.6f}")
+    print(f"mu: {normalization_statistics['mu']:.6f}")
+    print(f"sigma: {normalization_statistics['sigma']:.6f}")
     print(f"Columns: {', '.join(data.columns)}")
 
 
