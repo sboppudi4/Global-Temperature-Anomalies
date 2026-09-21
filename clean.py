@@ -1,11 +1,63 @@
 """Initial loading and file-hygiene stage for the temperature pipeline."""
 
 from pathlib import Path
+import re
+from datetime import datetime
+from typing import Optional
 
 import pandas as pd
 
 
 INPUT_PATH = Path(__file__).with_name("global_temp_dirty_v2.csv")
+MISSING_TOKENS = {"", ".", "--", "NaN", "null", "NA", "N/A", "#N/A", "n/a", "missing"}
+
+
+def _expand_two_digit_year(year: str) -> int:
+    year_number = int(year)
+    return 1900 + year_number if year_number >= 26 else 2000 + year_number
+
+
+def _parse_month_date(value: str) -> Optional[pd.Timestamp]:
+    value = value.strip()
+    if value in MISSING_TOKENS:
+        return None
+
+    patterns = (
+        (r"^(\d{4})(\d{2})$", lambda match: (int(match[1]), int(match[2]))),
+        (r"^(\d{4})[-/.](\d{1,2})(?:[-/.]\d{1,2})?$", lambda match: (int(match[1]), int(match[2]))),
+        (r"^(\d{1,2})[-/](\d{4})$", lambda match: (int(match[2]), int(match[1]))),
+        (r"^(\d{1,2})[-/](\d{2})$", lambda match: (_expand_two_digit_year(match[2]), int(match[1]))),
+        (r"^(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})$", lambda match: (
+            _expand_two_digit_year(match[3]) if len(match[3]) == 2 else int(match[3]),
+            int(match[1]),
+        )),
+        (r"^([A-Za-z]+)[ -](\d{2}|\d{4})$", lambda match: (
+            _expand_two_digit_year(match[2]) if len(match[2]) == 2 else int(match[2]),
+            datetime.strptime(match[1], "%B").month if len(match[1]) > 3 else datetime.strptime(match[1], "%b").month,
+        )),
+        (r"^(\d{4})\s+([A-Za-z]+)$", lambda match: (
+            int(match[1]),
+            datetime.strptime(match[2], "%B").month if len(match[2]) > 3 else datetime.strptime(match[2], "%b").month,
+        )),
+    )
+
+    for pattern, parts in patterns:
+        match = re.fullmatch(pattern, value)
+        if match:
+            try:
+                year, month = parts(match)
+                return pd.Timestamp(year=year, month=month, day=1)
+            except ValueError:
+                return None
+    return None
+
+
+def _looks_like_anomaly(value: str) -> bool:
+    return bool(re.fullmatch(r"[+-]?(?:\d+(?:[.,]\d+)?|\d+\.\d+°C)", value.strip()))
+
+
+def _looks_like_date(value: str) -> bool:
+    return _parse_month_date(value) is not None
 
 
 def load_raw_data(path: Path = INPUT_PATH) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -23,10 +75,39 @@ def load_raw_data(path: Path = INPUT_PATH) -> tuple[pd.DataFrame, pd.DataFrame]:
     return raw.loc[~footer_mask].reset_index(drop=True), raw.loc[footer_mask].reset_index(drop=True)
 
 
+def standardize_dates(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+    """Repair swapped date/value fields and parse dates to month timestamps."""
+    data = data.copy()
+    swapped_count = 0
+    unparsed_rows = []
+
+    for index in data.index:
+        date_value = data.at[index, "Date"]
+        anomaly_value = data.at[index, "Temperature_Anomaly"]
+        if (
+            (_looks_like_anomaly(date_value) or date_value in MISSING_TOKENS)
+            and _looks_like_date(anomaly_value)
+        ):
+            data.at[index, "Date"], data.at[index, "Temperature_Anomaly"] = anomaly_value, date_value
+            swapped_count += 1
+
+        parsed_date = _parse_month_date(data.at[index, "Date"])
+        if parsed_date is None:
+            unparsed_rows.append(data.loc[index].to_dict())
+        else:
+            data.at[index, "Date"] = parsed_date
+
+    data["Date"] = pd.to_datetime(data["Date"])
+    return data, pd.DataFrame(unparsed_rows), swapped_count
+
+
 def main() -> None:
     data, footer = load_raw_data()
+    data, unparsed, swapped_count = standardize_dates(data)
     print(f"Loaded candidate data rows: {len(data)}")
     print(f"Discarded file-hygiene rows: {len(footer)}")
+    print(f"Swapped rows repaired: {swapped_count}")
+    print(f"Unparsed date rows: {len(unparsed)}")
     print(f"Columns: {', '.join(data.columns)}")
 
 
