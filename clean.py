@@ -10,6 +10,8 @@ import pandas as pd
 
 INPUT_PATH = Path(__file__).with_name("global_temp_dirty_v2.csv")
 OUTPUT_PATH = Path(__file__).with_name("cleaned_monthly.csv")
+START_DATE = "1880-01-01"
+END_DATE = "2025-12-01"
 MISSING_TOKENS = {"", ".", "--", "NaN", "null", "NA", "N/A", "#N/A", "n/a", "missing"}
 MALFUNCTION_CODES = {"500", "-500", "999", "-999"}
 
@@ -165,6 +167,27 @@ def remove_iqr_outliers(data: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     return data, statistics
 
 
+def complete_monthly_series(data: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Reindex to the required monthly grid and interpolate missing anomalies."""
+    full_index = pd.date_range(START_DATE, END_DATE, freq="MS")
+    indexed = data.set_index("Date").reindex(full_index)
+    missing_before = int(indexed["Temperature_Anomaly"].isna().sum())
+    absent_months = len(full_index) - len(data)
+    missing_observed_values = missing_before - absent_months
+    indexed["Temperature_Anomaly"] = indexed["Temperature_Anomaly"].interpolate(method="time")
+    missing_after = int(indexed["Temperature_Anomaly"].isna().sum())
+    completed = indexed.reset_index(names="Date")
+    statistics = {
+        "expected_months": len(full_index),
+        "observed_months": len(data),
+        "absent_months": absent_months,
+        "missing_observed_values": missing_observed_values,
+        "months_imputed": missing_before - missing_after,
+        "missing_after_interpolation": missing_after,
+    }
+    return completed, statistics
+
+
 def write_monthly_checkpoint(data: pd.DataFrame, path: Path = OUTPUT_PATH) -> None:
     """Write the current cleaned monthly state before normalization is available."""
     checkpoint = pd.DataFrame(
@@ -183,6 +206,7 @@ def main() -> None:
     data, invalid_values, malfunction_count = parse_anomalies(data)
     data, duplicate_count = sort_and_deduplicate(data)
     data, iqr_statistics = remove_iqr_outliers(data)
+    data, interpolation_statistics = complete_monthly_series(data)
     write_monthly_checkpoint(data)
     print(f"Loaded candidate data rows: {len(data)}")
     print(f"Discarded file-hygiene rows: {len(footer)}")
@@ -193,6 +217,10 @@ def main() -> None:
     print(f"Duplicate rows removed: {duplicate_count}")
     print(f"IQR fences: {iqr_statistics['lower_fence']:.6f} to {iqr_statistics['upper_fence']:.6f}")
     print(f"IQR outliers removed: {iqr_statistics['outlier_count']}")
+    print(f"Absent months: {interpolation_statistics['absent_months']}")
+    print(f"Missing observed values: {interpolation_statistics['missing_observed_values']}")
+    print(f"Months imputed: {interpolation_statistics['months_imputed']}")
+    print(f"Missing after interpolation: {interpolation_statistics['missing_after_interpolation']}")
     print(f"Columns: {', '.join(data.columns)}")
 
 
