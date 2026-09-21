@@ -10,6 +10,7 @@ import pandas as pd
 
 INPUT_PATH = Path(__file__).with_name("global_temp_dirty_v2.csv")
 MISSING_TOKENS = {"", ".", "--", "NaN", "null", "NA", "N/A", "#N/A", "n/a", "missing"}
+MALFUNCTION_CODES = {"500", "-500", "999", "-999"}
 
 
 def _expand_two_digit_year(year: str) -> int:
@@ -101,13 +102,44 @@ def standardize_dates(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, i
     return data, pd.DataFrame(unparsed_rows), swapped_count
 
 
+def parse_anomalies(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+    """Convert anomaly text to floats and classify missing or malfunction values."""
+    data = data.copy()
+    invalid_rows = []
+    malfunction_count = 0
+    parsed_values = []
+
+    for index, raw_value in data["Temperature_Anomaly"].items():
+        normalized = raw_value.strip()
+        if normalized in MISSING_TOKENS:
+            parsed_values.append(float("nan"))
+            continue
+        if normalized in MALFUNCTION_CODES:
+            parsed_values.append(float("nan"))
+            malfunction_count += 1
+            continue
+
+        numeric_value = normalized.removesuffix("°C").replace(",", ".")
+        try:
+            parsed_values.append(float(numeric_value))
+        except ValueError:
+            parsed_values.append(float("nan"))
+            invalid_rows.append(data.loc[index].to_dict())
+
+    data["Temperature_Anomaly"] = parsed_values
+    return data, pd.DataFrame(invalid_rows), malfunction_count
+
+
 def main() -> None:
     data, footer = load_raw_data()
     data, unparsed, swapped_count = standardize_dates(data)
+    data, invalid_values, malfunction_count = parse_anomalies(data)
     print(f"Loaded candidate data rows: {len(data)}")
     print(f"Discarded file-hygiene rows: {len(footer)}")
     print(f"Swapped rows repaired: {swapped_count}")
     print(f"Unparsed date rows: {len(unparsed)}")
+    print(f"Invalid anomaly rows: {len(invalid_values)}")
+    print(f"Malfunction codes removed: {malfunction_count}")
     print(f"Columns: {', '.join(data.columns)}")
 
 
