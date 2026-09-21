@@ -130,16 +130,26 @@ def parse_anomalies(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, int
     return data, pd.DataFrame(invalid_rows), malfunction_count
 
 
+def sort_and_deduplicate(data: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Sort observations by month and keep one row for each month."""
+    sorted_data = data.sort_values("Date", kind="stable").reset_index(drop=True)
+    duplicate_count = int(sorted_data.duplicated("Date").sum())
+    deduplicated = sorted_data.drop_duplicates("Date", keep="first").reset_index(drop=True)
+    return deduplicated, duplicate_count
+
+
 def main() -> None:
     data, footer = load_raw_data()
     data, unparsed, swapped_count = standardize_dates(data)
     data, invalid_values, malfunction_count = parse_anomalies(data)
+    data, duplicate_count = sort_and_deduplicate(data)
     print(f"Loaded candidate data rows: {len(data)}")
     print(f"Discarded file-hygiene rows: {len(footer)}")
     print(f"Swapped rows repaired: {swapped_count}")
     print(f"Unparsed date rows: {len(unparsed)}")
     print(f"Invalid anomaly rows: {len(invalid_values)}")
     print(f"Malfunction codes removed: {malfunction_count}")
+    print(f"Duplicate rows removed: {duplicate_count}")
     print(f"Columns: {', '.join(data.columns)}")
 
 
