@@ -9,6 +9,7 @@ import pandas as pd
 
 
 INPUT_PATH = Path(__file__).with_name("global_temp_dirty_v2.csv")
+OUTPUT_PATH = Path(__file__).with_name("cleaned_monthly.csv")
 MISSING_TOKENS = {"", ".", "--", "NaN", "null", "NA", "N/A", "#N/A", "n/a", "missing"}
 MALFUNCTION_CODES = {"500", "-500", "999", "-999"}
 
@@ -138,11 +139,51 @@ def sort_and_deduplicate(data: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     return deduplicated, duplicate_count
 
 
+def remove_iqr_outliers(data: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Replace non-missing values outside the 1.5-IQR fences with NaN."""
+    data = data.copy()
+    valid_values = data["Temperature_Anomaly"].dropna()
+    q1 = float(valid_values.quantile(0.25))
+    q3 = float(valid_values.quantile(0.75))
+    iqr = q3 - q1
+    lower_fence = q1 - 1.5 * iqr
+    upper_fence = q3 + 1.5 * iqr
+    outlier_mask = data["Temperature_Anomaly"].notna() & (
+        (data["Temperature_Anomaly"] < lower_fence)
+        | (data["Temperature_Anomaly"] > upper_fence)
+    )
+    outlier_count = int(outlier_mask.sum())
+    data.loc[outlier_mask, "Temperature_Anomaly"] = float("nan")
+    statistics = {
+        "q1": q1,
+        "q3": q3,
+        "iqr": iqr,
+        "lower_fence": lower_fence,
+        "upper_fence": upper_fence,
+        "outlier_count": outlier_count,
+    }
+    return data, statistics
+
+
+def write_monthly_checkpoint(data: pd.DataFrame, path: Path = OUTPUT_PATH) -> None:
+    """Write the current cleaned monthly state before normalization is available."""
+    checkpoint = pd.DataFrame(
+        {
+            "date": data["Date"].dt.strftime("%Y-%m"),
+            "anomaly_c": data["Temperature_Anomaly"],
+            "z": float("nan"),
+        }
+    )
+    checkpoint.to_csv(path, index=False, float_format="%.6f")
+
+
 def main() -> None:
     data, footer = load_raw_data()
     data, unparsed, swapped_count = standardize_dates(data)
     data, invalid_values, malfunction_count = parse_anomalies(data)
     data, duplicate_count = sort_and_deduplicate(data)
+    data, iqr_statistics = remove_iqr_outliers(data)
+    write_monthly_checkpoint(data)
     print(f"Loaded candidate data rows: {len(data)}")
     print(f"Discarded file-hygiene rows: {len(footer)}")
     print(f"Swapped rows repaired: {swapped_count}")
@@ -150,6 +191,8 @@ def main() -> None:
     print(f"Invalid anomaly rows: {len(invalid_values)}")
     print(f"Malfunction codes removed: {malfunction_count}")
     print(f"Duplicate rows removed: {duplicate_count}")
+    print(f"IQR fences: {iqr_statistics['lower_fence']:.6f} to {iqr_statistics['upper_fence']:.6f}")
+    print(f"IQR outliers removed: {iqr_statistics['outlier_count']}")
     print(f"Columns: {', '.join(data.columns)}")
 
 
