@@ -6,11 +6,16 @@ from datetime import datetime
 from typing import Optional
 
 import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.collections import LineCollection
+from matplotlib.colors import TwoSlopeNorm
 
 
 INPUT_PATH = Path(__file__).with_name("global_temp_dirty_v2.csv")
 OUTPUT_PATH = Path(__file__).with_name("cleaned_monthly.csv")
 ANNUAL_OUTPUT_PATH = Path(__file__).with_name("annual_summary.csv")
+FIGURE_PATH = Path(__file__).with_name("temperature_anomalies.pdf")
 START_DATE = "1880-01-01"
 END_DATE = "2025-12-01"
 MISSING_TOKENS = {"", ".", "--", "NaN", "null", "NA", "N/A", "#N/A", "n/a", "missing"}
@@ -233,6 +238,38 @@ def write_annual_summary(annual: pd.DataFrame, path: Path = ANNUAL_OUTPUT_PATH) 
     annual.to_csv(path, index=False, float_format="%.6f")
 
 
+def create_dual_encoded_chart(
+    data: pd.DataFrame,
+    mu_20: float,
+    path: Path = FIGURE_PATH,
+) -> None:
+    """Create a segment-colored anomaly line with color centered at the baseline."""
+    dates = data["Date"].map(pd.Timestamp.toordinal).to_numpy(dtype=float)
+    anomalies = data["Temperature_Anomaly"].to_numpy(dtype=float)
+    baseline_differences = data["d"].to_numpy(dtype=float)
+    points = np.column_stack([dates, anomalies]).reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    limit = max(abs(float(baseline_differences.min())), abs(float(baseline_differences.max())))
+    norm = TwoSlopeNorm(vmin=-limit, vcenter=0, vmax=limit)
+
+    figure, axis = plt.subplots(figsize=(3.5, 2.35))
+    collection = LineCollection(segments, cmap="RdBu_r", norm=norm, linewidth=0.65)
+    collection.set_array((baseline_differences[:-1] + baseline_differences[1:]) / 2)
+    axis.add_collection(collection)
+    axis.axhline(0, color="black", linewidth=0.45, linestyle="--")
+    axis.set_xlim(dates.min(), dates.max())
+    axis.set_ylim(anomalies.min() - 0.08, anomalies.max() + 0.08)
+    axis.set_xlabel("Year")
+    axis.set_ylabel("Temperature anomaly (°C)")
+    axis.set_title("Simulated global temperature anomalies, 1880-2025")
+    axis.grid(True, linewidth=0.25, alpha=0.35)
+    colorbar = figure.colorbar(collection, ax=axis, pad=0.02)
+    colorbar.set_label("d = anomaly - 1901-2000 mean (°C)")
+    figure.tight_layout()
+    figure.savefig(path, format="pdf", bbox_inches="tight")
+    plt.close(figure)
+
+
 def main() -> None:
     data, footer = load_raw_data()
     data, unparsed, swapped_count = standardize_dates(data)
@@ -244,6 +281,7 @@ def main() -> None:
     write_monthly_checkpoint(data)
     annual, warmest = summarize_annual(data)
     write_annual_summary(annual)
+    create_dual_encoded_chart(data, normalization_statistics["mu_20"])
     print(f"Loaded candidate data rows: {len(data)}")
     print(f"Discarded file-hygiene rows: {len(footer)}")
     print(f"Swapped rows repaired: {swapped_count}")
