@@ -1,4 +1,4 @@
-"""Initial loading and file-hygiene stage for the temperature pipeline."""
+"""Reproducible cleaning, analysis, and reporting pipeline for the dataset."""
 
 from pathlib import Path
 import re
@@ -16,6 +16,7 @@ INPUT_PATH = Path(__file__).with_name("global_temp_dirty_v2.csv")
 OUTPUT_PATH = Path(__file__).with_name("cleaned_monthly.csv")
 ANNUAL_OUTPUT_PATH = Path(__file__).with_name("annual_summary.csv")
 FIGURE_PATH = Path(__file__).with_name("temperature_anomalies.pdf")
+CLEANING_LOG_PATH = Path(__file__).with_name("cleaning_log.txt")
 START_DATE = "1880-01-01"
 END_DATE = "2025-12-01"
 MISSING_TOKENS = {"", ".", "--", "NaN", "null", "NA", "N/A", "#N/A", "n/a", "missing"}
@@ -111,11 +112,11 @@ def standardize_dates(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, i
     return data, pd.DataFrame(unparsed_rows), swapped_count
 
 
-def parse_anomalies(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+def parse_anomalies(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Convert anomaly text to floats and classify missing or malfunction values."""
     data = data.copy()
     invalid_rows = []
-    malfunction_count = 0
+    malfunction_counts = {code: 0 for code in MALFUNCTION_CODES}
     parsed_values = []
 
     for index, raw_value in data["Temperature_Anomaly"].items():
@@ -125,7 +126,7 @@ def parse_anomalies(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, int
             continue
         if normalized in MALFUNCTION_CODES:
             parsed_values.append(float("nan"))
-            malfunction_count += 1
+            malfunction_counts[normalized] += 1
             continue
 
         numeric_value = normalized.removesuffix("°C").replace(",", ".")
@@ -136,7 +137,8 @@ def parse_anomalies(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, int
             invalid_rows.append(data.loc[index].to_dict())
 
     data["Temperature_Anomaly"] = parsed_values
-    return data, pd.DataFrame(invalid_rows), malfunction_count
+    malfunction_counts["total"] = sum(malfunction_counts.values())
+    return data, pd.DataFrame(invalid_rows), malfunction_counts
 
 
 def sort_and_deduplicate(data: pd.DataFrame) -> tuple[pd.DataFrame, int]:
@@ -222,7 +224,7 @@ def summarize_annual(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def write_monthly_checkpoint(data: pd.DataFrame, path: Path = OUTPUT_PATH) -> None:
-    """Write the current cleaned monthly state before normalization is available."""
+    """Write the normalized cleaned monthly output."""
     checkpoint = pd.DataFrame(
         {
             "date": data["Date"].dt.strftime("%Y-%m"),
@@ -238,11 +240,71 @@ def write_annual_summary(annual: pd.DataFrame, path: Path = ANNUAL_OUTPUT_PATH) 
     annual.to_csv(path, index=False, float_format="%.6f")
 
 
-def create_dual_encoded_chart(
-    data: pd.DataFrame,
-    mu_20: float,
-    path: Path = FIGURE_PATH,
+def write_cleaning_log(
+    candidate_row_count: int,
+    footer: pd.DataFrame,
+    unparsed_dates: pd.DataFrame,
+    invalid_values: pd.DataFrame,
+    swapped_count: int,
+    malfunction_counts: dict,
+    duplicate_count: int,
+    iqr_statistics: dict,
+    interpolation_statistics: dict,
+    path: Path = CLEANING_LOG_PATH,
 ) -> None:
+    """Write the reproducibility counts and quality checks for the pipeline."""
+    lines = [
+        "Global Temperature Anomalies Cleaning Log",
+        "Dataset: simulated teaching data; not an official climate record.",
+        "",
+        "Loading and date standardization",
+        f"Candidate rows after file-hygiene filtering: {candidate_row_count}",
+        f"File-hygiene rows discarded: {len(footer)}",
+        f"Swapped date/value rows repaired: {swapped_count}",
+        f"Unparsed date rows: {len(unparsed_dates)}",
+        f"Invalid anomaly rows: {len(invalid_values)}",
+        "",
+        "Value parsing",
+        f"Sensor-malfunction codes converted to NaN: {malfunction_counts['total']}",
+        "Sensor code counts:",
+        *(f"  {code}: {malfunction_counts[code]}" for code in sorted(MALFUNCTION_CODES)),
+        "",
+        "Deduplication",
+        f"Rows remaining after sorting and deduplication: {interpolation_statistics['observed_months']}",
+        f"Duplicate rows removed: {duplicate_count}",
+        "",
+        "IQR outlier removal",
+        f"Q1: {iqr_statistics['q1']:.9f}",
+        f"Q3: {iqr_statistics['q3']:.9f}",
+        f"IQR: {iqr_statistics['iqr']:.9f}",
+        f"Lower fence: {iqr_statistics['lower_fence']:.9f}",
+        f"Upper fence: {iqr_statistics['upper_fence']:.9f}",
+        f"Outliers replaced with NaN: {iqr_statistics['outlier_count']}",
+        (
+            "Plausible readings removed: no."
+            if iqr_statistics["outlier_count"] == 0
+            else "Plausible readings removed: yes; see outlier count."
+        ),
+        "",
+        "Monthly grid and interpolation",
+        f"Expected complete months: {interpolation_statistics['expected_months']}",
+        f"Observed months before reindexing: {interpolation_statistics['observed_months']}",
+        f"Absent calendar months: {interpolation_statistics['absent_months']}",
+        f"Missing values in observed months: {interpolation_statistics['missing_observed_values']}",
+        f"Total months imputed by time interpolation: {interpolation_statistics['months_imputed']}",
+        f"Missing values after interpolation: {interpolation_statistics['missing_after_interpolation']}",
+        "",
+        "Unparsed rows",
+    ]
+    if unparsed_dates.empty and invalid_values.empty:
+        lines.append("None")
+    else:
+        for row in pd.concat([unparsed_dates, invalid_values], ignore_index=True).to_dict("records"):
+            lines.append(str(row))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def create_dual_encoded_chart(data: pd.DataFrame, path: Path = FIGURE_PATH) -> None:
     """Create a segment-colored anomaly line with color centered at the baseline."""
     dates = data["Date"].map(pd.Timestamp.toordinal).to_numpy(dtype=float)
     anomalies = data["Temperature_Anomaly"].to_numpy(dtype=float)
@@ -273,7 +335,8 @@ def create_dual_encoded_chart(
 def main() -> None:
     data, footer = load_raw_data()
     data, unparsed, swapped_count = standardize_dates(data)
-    data, invalid_values, malfunction_count = parse_anomalies(data)
+    candidate_row_count = len(data)
+    data, invalid_values, malfunction_counts = parse_anomalies(data)
     data, duplicate_count = sort_and_deduplicate(data)
     data, iqr_statistics = remove_iqr_outliers(data)
     data, interpolation_statistics = complete_monthly_series(data)
@@ -281,13 +344,24 @@ def main() -> None:
     write_monthly_checkpoint(data)
     annual, warmest = summarize_annual(data)
     write_annual_summary(annual)
-    create_dual_encoded_chart(data, normalization_statistics["mu_20"])
+    create_dual_encoded_chart(data)
+    write_cleaning_log(
+        candidate_row_count,
+        footer,
+        unparsed,
+        invalid_values,
+        swapped_count,
+        malfunction_counts,
+        duplicate_count,
+        iqr_statistics,
+        interpolation_statistics,
+    )
     print(f"Loaded candidate data rows: {len(data)}")
     print(f"Discarded file-hygiene rows: {len(footer)}")
     print(f"Swapped rows repaired: {swapped_count}")
     print(f"Unparsed date rows: {len(unparsed)}")
     print(f"Invalid anomaly rows: {len(invalid_values)}")
-    print(f"Malfunction codes removed: {malfunction_count}")
+    print(f"Malfunction codes removed: {malfunction_counts['total']}")
     print(f"Duplicate rows removed: {duplicate_count}")
     print(f"IQR fences: {iqr_statistics['lower_fence']:.6f} to {iqr_statistics['upper_fence']:.6f}")
     print(f"IQR outliers removed: {iqr_statistics['outlier_count']}")

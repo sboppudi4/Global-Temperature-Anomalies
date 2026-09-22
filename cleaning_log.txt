@@ -1,0 +1,41 @@
+Global Temperature Anomalies Cleaning Log
+Dataset: simulated teaching data; not an official climate record.
+
+Loading and date standardization
+Candidate rows after file-hygiene filtering: 1707
+File-hygiene rows discarded: 4
+Swapped date/value rows repaired: 32
+Unparsed date rows: 0
+Invalid anomaly rows: 0
+
+Value parsing
+Sensor-malfunction codes converted to NaN: 63
+Sensor code counts:
+  -500: 10
+  -999: 9
+  500: 35
+  999: 9
+
+Deduplication
+Rows remaining after sorting and deduplication: 1687
+Duplicate rows removed: 20
+
+IQR outlier removal
+Q1: -0.380750000
+Q3: 0.447500000
+IQR: 0.828250000
+Lower fence: -1.623125000
+Upper fence: 1.689875000
+Outliers replaced with NaN: 0
+Plausible readings removed: no.
+
+Monthly grid and interpolation
+Expected complete months: 1752
+Observed months before reindexing: 1687
+Absent calendar months: 65
+Missing values in observed months: 125
+Total months imputed by time interpolation: 190
+Missing values after interpolation: 0
+
+Unparsed rows
+None
