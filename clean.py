@@ -10,6 +10,7 @@ import pandas as pd
 
 INPUT_PATH = Path(__file__).with_name("global_temp_dirty_v2.csv")
 OUTPUT_PATH = Path(__file__).with_name("cleaned_monthly.csv")
+ANNUAL_OUTPUT_PATH = Path(__file__).with_name("annual_summary.csv")
 START_DATE = "1880-01-01"
 END_DATE = "2025-12-01"
 MISSING_TOKENS = {"", ".", "--", "NaN", "null", "NA", "N/A", "#N/A", "n/a", "missing"}
@@ -200,6 +201,21 @@ def normalize_series(data: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     return data, {"mu_20": mu_20, "mu": mu, "sigma": sigma}
 
 
+def summarize_annual(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Calculate annual anomaly and z-score means and return the five warmest years."""
+    annual = (
+        data.assign(year=data["Date"].dt.year)
+        .groupby("year", as_index=False)
+        .agg(
+            mean_anomaly_c=("Temperature_Anomaly", "mean"),
+            mean_z=("z", "mean"),
+            months=("Date", "count"),
+        )
+    )
+    warmest = annual.nlargest(5, "mean_anomaly_c").reset_index(drop=True)
+    return annual, warmest
+
+
 def write_monthly_checkpoint(data: pd.DataFrame, path: Path = OUTPUT_PATH) -> None:
     """Write the current cleaned monthly state before normalization is available."""
     checkpoint = pd.DataFrame(
@@ -212,6 +228,11 @@ def write_monthly_checkpoint(data: pd.DataFrame, path: Path = OUTPUT_PATH) -> No
     checkpoint.to_csv(path, index=False, float_format="%.6f")
 
 
+def write_annual_summary(annual: pd.DataFrame, path: Path = ANNUAL_OUTPUT_PATH) -> None:
+    """Write annual results for inspection and report generation."""
+    annual.to_csv(path, index=False, float_format="%.6f")
+
+
 def main() -> None:
     data, footer = load_raw_data()
     data, unparsed, swapped_count = standardize_dates(data)
@@ -221,6 +242,8 @@ def main() -> None:
     data, interpolation_statistics = complete_monthly_series(data)
     data, normalization_statistics = normalize_series(data)
     write_monthly_checkpoint(data)
+    annual, warmest = summarize_annual(data)
+    write_annual_summary(annual)
     print(f"Loaded candidate data rows: {len(data)}")
     print(f"Discarded file-hygiene rows: {len(footer)}")
     print(f"Swapped rows repaired: {swapped_count}")
@@ -237,6 +260,8 @@ def main() -> None:
     print(f"mu_20: {normalization_statistics['mu_20']:.6f}")
     print(f"mu: {normalization_statistics['mu']:.6f}")
     print(f"sigma: {normalization_statistics['sigma']:.6f}")
+    print("Five warmest years:")
+    print(warmest[["year", "mean_anomaly_c", "mean_z"]].to_string(index=False))
     print(f"Columns: {', '.join(data.columns)}")
 
 
